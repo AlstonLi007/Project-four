@@ -1,0 +1,396 @@
+"""SQLite storage layer for WeChat-style conversational logging.
+
+This module keeps contacts, conversations, raw messages, reply candidates,
+training examples, and style profiles in a single SQLite database file. It is
+framework-light so it can be imported from UI automation code without extra
+dependencies.
+"""
+from __future__ import annotations
+
+import json
+import sqlite3
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional
+
+DEFAULT_DB_PATH = "wechat_assistant.db"
+
+SCHEMA = """
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS contacts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    wechat_id       TEXT NOT NULL,
+    display_name    TEXT NOT NULL,
+    type            TEXT NOT NULL,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at    DATETIME,
+    UNIQUE(wechat_id)
+);
+
+CREATE TABLE IF NOT EXISTS conversations (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    contact_id       INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+    channel          TEXT NOT NULL,
+    external_chat_id TEXT,
+    created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_message_at  DATETIME
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    sender          TEXT NOT NULL,
+    raw_text        TEXT,
+    clean_text      TEXT,
+    msg_type        TEXT NOT NULL,
+    created_at      DATETIME NOT NULL,
+    meta_json       TEXT
+);
+
+CREATE TABLE IF NOT EXISTS reply_candidates (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    message_id      INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    candidate_index INTEGER NOT NULL,
+    text            TEXT NOT NULL,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    chosen          INTEGER DEFAULT 0,
+    chosen_at       DATETIME,
+    edited_text     TEXT,
+    source          TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS training_examples (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    contact_id      INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+    conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    context_text    TEXT NOT NULL,
+    reply_text      TEXT NOT NULL,
+    source          TEXT NOT NULL,
+    weight          REAL DEFAULT 1.0,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS style_profiles (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    contact_id      INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+    channel         TEXT NOT NULL,
+    label           TEXT NOT NULL,
+    prompt_text     TEXT NOT NULL,
+    embedding_json  TEXT,
+    model_type      TEXT NOT NULL,
+    model_id        TEXT,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME,
+    UNIQUE(contact_id, channel, label)
+);
+"""
+
+
+@dataclass
+class Contact:
+    """Simple contact value object for convenience."""
+
+    id: int
+    wechat_id: str
+    display_name: str
+    type: str
+
+
+class Database:
+    """Lightweight SQLite helper with explicit schema management."""
+
+    def __init__(self, path: str = DEFAULT_DB_PATH) -> None:
+        self.path = Path(path)
+        self._ensure_schema()
+
+    @contextmanager
+    def _connect(self) -> Iterable[sqlite3.Connection]:
+        con = sqlite3.connect(str(self.path))
+        con.row_factory = sqlite3.Row
+        try:
+            yield con
+            con.commit()
+        finally:
+            con.close()
+
+    def _ensure_schema(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self._connect() as con:
+            con.executescript(SCHEMA)
+
+    # -------- contacts & conversations --------
+
+    def get_or_create_contact(
+        self, wechat_id: str, display_name: Optional[str] = None, type: str = "private"
+    ) -> Contact:
+        """Fetch or insert a contact, returning a ``Contact`` dataclass."""
+
+        with self._connect() as con:
+            cur = con.execute(
+                "SELECT * FROM contacts WHERE wechat_id = ?",
+                (wechat_id,),
+            )
+            row = cur.fetchone()
+            if row:
+                return Contact(
+                    id=row["id"],
+                    wechat_id=row["wechat_id"],
+                    display_name=row["display_name"],
+                    type=row["type"],
+                )
+
+            if not display_name:
+                display_name = wechat_id
+
+            cur = con.execute(
+                """
+                INSERT INTO contacts (wechat_id, display_name, type, last_seen_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (wechat_id, display_name, type, datetime.utcnow().isoformat()),
+            )
+            cid = cur.lastrowid
+            return Contact(id=int(cid), wechat_id=wechat_id, display_name=display_name, type=type)
+
+    def touch_contact(self, contact_id: int) -> None:
+        """Update ``last_seen_at`` when a contact is observed in the UI."""
+
+        with self._connect() as con:
+            con.execute(
+                "UPDATE contacts SET last_seen_at = ? WHERE id = ?",
+                (datetime.utcnow().isoformat(), contact_id),
+            )
+
+    def get_or_create_conversation(
+        self,
+        contact_id: int,
+        channel: str = "wechat",
+        external_chat_id: Optional[str] = None,
+    ) -> int:
+        """Return a conversation ID for the given contact + channel."""
+
+        with self._connect() as con:
+            cur = con.execute(
+                """
+                SELECT id FROM conversations
+                WHERE contact_id = ? AND channel = ? AND ifnull(external_chat_id, '') = ifnull(?, '')
+                """,
+                (contact_id, channel, external_chat_id),
+            )
+            row = cur.fetchone()
+            if row:
+                return int(row["id"])
+
+            cur = con.execute(
+                """
+                INSERT INTO conversations (contact_id, channel, external_chat_id, last_message_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (contact_id, channel, external_chat_id, datetime.utcnow().isoformat()),
+            )
+            return int(cur.lastrowid)
+
+    # -------- messages & candidates --------
+
+    def log_message(
+        self,
+        conversation_id: int,
+        sender: str,
+        raw_text: str,
+        msg_type: str = "text",
+        created_at: Optional[datetime] = None,
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        """Insert a message and update the conversation timestamp."""
+
+        if created_at is None:
+            created_at = datetime.utcnow()
+        meta_json = json.dumps(meta or {}, ensure_ascii=False)
+
+        with self._connect() as con:
+            cur = con.execute(
+                """
+                INSERT INTO messages (conversation_id, sender, raw_text, clean_text,
+                                      msg_type, created_at, meta_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    conversation_id,
+                    sender,
+                    raw_text,
+                    raw_text,
+                    msg_type,
+                    created_at.isoformat(),
+                    meta_json,
+                ),
+            )
+            msg_id = int(cur.lastrowid)
+            con.execute(
+                "UPDATE conversations SET last_message_at = ? WHERE id = ?",
+                (created_at.isoformat(), conversation_id),
+            )
+            return msg_id
+
+    def log_reply_candidates(
+        self,
+        conversation_id: int,
+        message_id: int,
+        candidates: List[str],
+        source: str = "auto",
+    ) -> List[int]:
+        """Persist generated reply options for later review/training."""
+
+        ids: List[int] = []
+        with self._connect() as con:
+            for idx, text in enumerate(candidates, start=1):
+                cur = con.execute(
+                    """
+                    INSERT INTO reply_candidates
+                    (conversation_id, message_id, candidate_index, text, source)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (conversation_id, message_id, idx, text, source),
+                )
+                ids.append(int(cur.lastrowid))
+        return ids
+
+    def mark_candidate_chosen(
+        self,
+        candidate_id: int,
+        edited_text: Optional[str] = None,
+    ) -> None:
+        """Record which candidate was selected (and any edits)."""
+
+        now = datetime.utcnow().isoformat()
+        with self._connect() as con:
+            if edited_text:
+                con.execute(
+                    """
+                    UPDATE reply_candidates
+                    SET chosen = 1, chosen_at = ?, edited_text = ?
+                    WHERE id = ?
+                    """,
+                    (now, edited_text, candidate_id),
+                )
+            else:
+                con.execute(
+                    """
+                    UPDATE reply_candidates
+                    SET chosen = 1, chosen_at = ?
+                    WHERE id = ?
+                    """,
+                    (now, candidate_id),
+                )
+
+    # -------- training examples --------
+
+    def add_training_example(
+        self,
+        contact_id: int,
+        conversation_id: int,
+        context_text: str,
+        reply_text: str,
+        source: str = "manual",
+        weight: float = 1.0,
+    ) -> int:
+        """Store a context/reply pair for later fine-tuning."""
+
+        with self._connect() as con:
+            cur = con.execute(
+                """
+                INSERT INTO training_examples
+                (contact_id, conversation_id, context_text, reply_text, source, weight)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (contact_id, conversation_id, context_text, reply_text, source, weight),
+            )
+            return int(cur.lastrowid)
+
+    def get_training_examples(
+        self,
+        contact_id: int,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Fetch the newest training examples for a contact."""
+
+        with self._connect() as con:
+            cur = con.execute(
+                """
+                SELECT context_text, reply_text, source, weight, created_at
+                FROM training_examples
+                WHERE contact_id = ?
+                ORDER BY datetime(created_at) DESC
+                LIMIT ?
+                """,
+                (contact_id, limit),
+            )
+            rows = cur.fetchall()
+        return [dict(r) for r in rows]
+
+    # -------- style profiles --------
+
+    def get_style_profile(
+        self,
+        contact_id: int,
+        channel: str = "wechat",
+        label: str = "default",
+    ) -> Optional[Dict[str, Any]]:
+        """Return the stored style profile for a contact, if present."""
+
+        with self._connect() as con:
+            cur = con.execute(
+                """
+                SELECT * FROM style_profiles
+                WHERE contact_id = ? AND channel = ? AND label = ?
+                """,
+                (contact_id, channel, label),
+            )
+            row = cur.fetchone()
+        return dict(row) if row else None
+
+    def upsert_style_profile(
+        self,
+        contact_id: int,
+        channel: str,
+        label: str,
+        prompt_text: str,
+        model_type: str = "prompt",
+        model_id: Optional[str] = None,
+        embedding: Optional[List[float]] = None,
+    ) -> None:
+        """Insert or update a style profile with prompt/model metadata."""
+
+        now = datetime.utcnow().isoformat()
+        emb_json = json.dumps(embedding) if embedding is not None else None
+        with self._connect() as con:
+            cur = con.execute(
+                """
+                SELECT id FROM style_profiles
+                WHERE contact_id = ? AND channel = ? AND label = ?
+                """,
+                (contact_id, channel, label),
+            )
+            row = cur.fetchone()
+            if row:
+                con.execute(
+                    """
+                    UPDATE style_profiles
+                    SET prompt_text = ?, embedding_json = ?, model_type = ?, model_id = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (prompt_text, emb_json, model_type, model_id, now, row["id"]),
+                )
+            else:
+                con.execute(
+                    """
+                    INSERT INTO style_profiles
+                    (contact_id, channel, label, prompt_text, embedding_json,
+                     model_type, model_id, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (contact_id, channel, label, prompt_text, emb_json, model_type, model_id, now, now),
+                )
