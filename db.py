@@ -325,7 +325,7 @@ class Database:
         with self._connect() as con:
             cur = con.execute(
                 """
-                SELECT context_text, reply_text, source, weight, created_at
+                SELECT context_text, reply_text, source, weight, created_at, id, conversation_id
                 FROM training_examples
                 WHERE contact_id = ?
                 ORDER BY datetime(created_at) DESC
