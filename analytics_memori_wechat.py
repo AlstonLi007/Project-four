@@ -306,8 +306,13 @@ def ensure_llm_dashboard_views(engine, *, long_threshold: int = 80) -> None:
     Views created:
         - ``v_wechat_llm_candidate_metrics``: candidate-level facts with helper
           booleans/lengths for quick aggregation.
-        - ``v_wechat_llm_daily_metrics``: date-grained rollup across style
-          versions, prompt versions, and RAG switches.
+        - ``v_wechat_llm_metrics_daily``: date-grained rollup across style
+          versions, prompt versions, and RAG switches with length/selection
+          metrics.
+        - ``v_wechat_llm_metrics_style_overall``: style/prompt-level summary
+          weighted by candidate counts across days.
+        - ``v_wechat_llm_metrics_contact_overall``: per-contact/prompt summary
+          weighted by candidate counts across days.
     """
 
     # Ensure the base alignment view exists first.
@@ -367,21 +372,24 @@ def ensure_llm_dashboard_views(engine, *, long_threshold: int = 80) -> None:
     """
 
     daily_view_sql = """
-    CREATE VIEW IF NOT EXISTS v_wechat_llm_daily_metrics AS
+    CREATE VIEW IF NOT EXISTS v_wechat_llm_metrics_daily AS
     SELECT
         llm_date,
 
         wechat_id,
         contact_display_name,
+
         style_profile_id,
         style_label,
         style_profile_version,
+        style_profile_model_id,
         prompt_version,
+
         rag_enabled,
-        rag_engine,
-        rag_mode,
         rag_profile_id,
         rag_track_id,
+        rag_engine,
+        rag_mode,
 
         COUNT(*)                           AS total_candidates,
         COUNT(DISTINCT memori_event_id)    AS llm_call_count,
@@ -397,7 +405,8 @@ def ensure_llm_dashboard_views(engine, *, long_threshold: int = 80) -> None:
             ELSE NULL
         END                                AS edited_ratio_given_chosen,
 
-        AVG(llm_latency_ms)                AS avg_latency_ms
+        AVG(llm_latency_ms)                AS avg_latency_ms,
+        AVG(COALESCE(rag_hit_count, 0))    AS avg_rag_hit_count
 
     FROM v_wechat_llm_candidate_metrics
     GROUP BY
@@ -407,6 +416,7 @@ def ensure_llm_dashboard_views(engine, *, long_threshold: int = 80) -> None:
         style_profile_id,
         style_label,
         style_profile_version,
+        style_profile_model_id,
         prompt_version,
         rag_enabled,
         rag_engine,
@@ -415,9 +425,77 @@ def ensure_llm_dashboard_views(engine, *, long_threshold: int = 80) -> None:
         rag_track_id
     """
 
+    style_overall_sql = """
+    CREATE VIEW IF NOT EXISTS v_wechat_llm_metrics_style_overall AS
+    SELECT
+        style_profile_id,
+        style_label,
+        style_profile_version,
+        style_profile_model_id,
+        prompt_version,
+
+        SUM(total_candidates)                         AS total_candidates,
+        SUM(message_count)                            AS total_messages,
+        SUM(llm_call_count)                           AS total_llm_calls,
+
+        SUM(avg_len * total_candidates)
+            / NULLIF(SUM(total_candidates), 0)        AS avg_len,
+        SUM(long_ratio * total_candidates)
+            / NULLIF(SUM(total_candidates), 0)        AS long_ratio,
+        SUM(chosen_ratio * total_candidates)
+            / NULLIF(SUM(total_candidates), 0)        AS chosen_ratio,
+        SUM(edited_ratio_overall * total_candidates)
+            / NULLIF(SUM(total_candidates), 0)        AS edited_ratio_overall,
+        SUM(edited_ratio_given_chosen * total_candidates)
+            / NULLIF(SUM(total_candidates), 0)        AS edited_ratio_given_chosen,
+
+        AVG(avg_latency_ms)                           AS avg_latency_ms,
+        AVG(avg_rag_hit_count)                        AS avg_rag_hit_count
+    FROM v_wechat_llm_metrics_daily
+    GROUP BY
+        style_profile_id,
+        style_label,
+        style_profile_version,
+        style_profile_model_id,
+        prompt_version
+    """
+
+    contact_overall_sql = """
+    CREATE VIEW IF NOT EXISTS v_wechat_llm_metrics_contact_overall AS
+    SELECT
+        wechat_id,
+        contact_display_name,
+        prompt_version,
+
+        SUM(total_candidates)                         AS total_candidates,
+        SUM(message_count)                            AS total_messages,
+        SUM(llm_call_count)                           AS total_llm_calls,
+
+        SUM(avg_len * total_candidates)
+            / NULLIF(SUM(total_candidates), 0)        AS avg_len,
+        SUM(long_ratio * total_candidates)
+            / NULLIF(SUM(total_candidates), 0)        AS long_ratio,
+        SUM(chosen_ratio * total_candidates)
+            / NULLIF(SUM(total_candidates), 0)        AS chosen_ratio,
+        SUM(edited_ratio_overall * total_candidates)
+            / NULLIF(SUM(total_candidates), 0)        AS edited_ratio_overall,
+        SUM(edited_ratio_given_chosen * total_candidates)
+            / NULLIF(SUM(total_candidates), 0)        AS edited_ratio_given_chosen,
+
+        AVG(avg_latency_ms)                           AS avg_latency_ms,
+        AVG(avg_rag_hit_count)                        AS avg_rag_hit_count
+    FROM v_wechat_llm_metrics_daily
+    GROUP BY
+        wechat_id,
+        contact_display_name,
+        prompt_version
+    """
+
     with engine.begin() as conn:
         conn.execute(text(candidate_view_sql))
         conn.execute(text(daily_view_sql))
+        conn.execute(text(style_overall_sql))
+        conn.execute(text(contact_overall_sql))
 
 # ---------------------------------------------------------------------------
 # Metrics helpers
