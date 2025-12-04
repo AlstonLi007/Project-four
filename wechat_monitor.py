@@ -47,7 +47,7 @@ class WeChatMonitor:
             contexts: Iterable of tuples describing chats. Either
                 ``(display_name, chat_text)`` or ``(wechat_id, display_name,
                 chat_text)``.
-        """
+        """https://github.com/AlstonLi007/Project-four/pull/4/conflict?name=wechat_monitor.py&base_oid=82d3fff582daf3f65d5cb1034fd9081744b29274&head_oid=1ba16a52227da65a8a9f759afe733016d29b8ce8
 
         for entry in contexts:
             if len(entry) == 2:
