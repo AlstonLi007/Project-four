@@ -6,7 +6,6 @@ tone and structure, and write that prompt back to ``style_profiles``.
 """
 from __future__ import annotations
 
-import hashlib
 import os
 from typing import Optional
 
@@ -33,19 +32,6 @@ STYLE_SYSTEM_PROMPT = """
 
 不要复述原文内容，只总结风格。
 """
-
-
-def _compute_style_version(prompt_text: str) -> str:
-    """Return a stable short hash for the given prompt text.
-
-    Using a hash keeps the version deterministic: identical prompts map to the
-    same version string, while any change produces a new ID. The hash is stored
-    in ``style_profiles.model_id`` so downstream analytics, Memori attribution,
-    and RAG indexing can cleanly group by style profile version.
-    """
-
-    digest = hashlib.sha1(prompt_text.encode("utf-8")).hexdigest()
-    return f"v-{digest[:8]}"
 
 
 def build_style_prompt_for_contact(
@@ -82,28 +68,25 @@ def build_style_prompt_for_contact(
     payload = "\n\n".join(chunks)
 
     client = OpenAI()
-    response = client.chat.completions.create(
+    response = client.responses.create(
         model=OPENAI_MODEL,
-        messages=[
+        input=[
             {"role": "system", "content": STYLE_SYSTEM_PROMPT},
             {"role": "user", "content": payload},
         ],
     )
 
-    prompt_text = (response.choices[0].message.content or "").strip()
-    version = _compute_style_version(prompt_text)
+    prompt_text = response.output[0].content[0].text.strip()
     db.upsert_style_profile(
         contact_id=contact.id,
         channel="wechat",
         label="default",
         prompt_text=prompt_text,
         model_type="prompt",
-        model_id=version,
+        model_id=None,
     )
 
-    print(
-        f"[style] contact {contact_wechat_id} style profile updated (version={version})"
-    )
+    print(f"[style] contact {contact_wechat_id} style profile updated")
     return prompt_text
 
 
