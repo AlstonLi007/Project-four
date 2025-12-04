@@ -17,7 +17,11 @@ from sqlalchemy.orm import sessionmaker
 
 from memori import Memori
 
-DEFAULT_DB_URL = "sqlite:///wechat_assistant.db"
+# Keep Memori pointed at the same SQLite file used by the assistant tables so
+# instrumentation and local logs live together.
+from db import DEFAULT_DB_PATH
+# Allow overriding via MEMORI_DB_URL; otherwise reuse the shared DB path.
+DEFAULT_DB_URL = f"sqlite:///{DEFAULT_DB_PATH}"
 
 _ENGINE = None
 _SessionLocal = None
