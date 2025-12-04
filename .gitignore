@@ -7,3 +7,4 @@ __pycache__/
 
 # Local sqlite DB
 wechat_automation.db
+codex_files.txt
