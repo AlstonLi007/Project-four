@@ -1,0 +1,9 @@
+﻿# Python junk
+__pycache__/
+*.pyc
+
+# Local virtualenv
+.venv/
+
+# Local sqlite DB
+wechat_automation.db
