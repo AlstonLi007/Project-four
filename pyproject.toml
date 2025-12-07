@@ -19,6 +19,7 @@ dependencies = [
   "streamlit>=1.32.0",
   "skyvern>=0.1.0",
   "typer>=0.9.0",
+  "python-dotenv>=1.0.1",
 ]
 
 [project.scripts]
@@ -31,6 +32,7 @@ llm-dashboard = "llm_dashboard_app:main"
 skyvern-task = "skyvern_task:main"
 wechat-rag = "wechat_rag_cli:main"
 fs-indexer = "fs_indexer:main"
+jarvis-console = "jarvis_console:main"
 
 [build-system]
 requires = ["setuptools>=61"]
