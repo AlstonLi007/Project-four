@@ -94,7 +94,7 @@ async def _index_training_examples_for_contact(
     db_path: str = DEFAULT_DB_PATH,
     limit: int = 300,
     working_dir: Optional[str] = None,
-    style_profile_version: Optional[int] = None,
+    style_profile_version: Optional[str] = None,
 ) -> None:
     """Insert a contact's training examples into their RAG index as a single doc."""
 
@@ -115,7 +115,7 @@ async def _index_training_examples_for_contact(
     if not blocks:
         return
 
-    spv = style_profile_version or 0
+    spv = style_profile_version or "0"
     doc_id = f"training:{wechat_id}:spv{spv}"
     track_id = f"training_examples:{wechat_id}:spv{spv}"
 
@@ -141,7 +141,7 @@ def backfill_training_examples_to_rag(
     *,
     working_dir: str = "rag_store",
     max_examples_per_contact: int = 500,
-    style_profile_version: Optional[int] = None,
+    style_profile_version: Optional[str] = None,
 ) -> None:
     """Backfill all contacts' training examples into LightRAG."""
 
@@ -166,7 +166,7 @@ def ensure_index_for_contact(
     db_path: str = DEFAULT_DB_PATH,
     limit: int = 300,
     working_dir: str = "rag_store",
-    style_profile_version: Optional[int] = None,
+    style_profile_version: Optional[str] = None,
 ) -> None:
     """Synchronously refresh a single contact's RAG index."""
 
@@ -342,7 +342,7 @@ def ensure_index_from_artifacts(
     working_dir: str = "rag_store",
     kind_filter: Optional[str] = None,
     source_filter: Optional[str] = None,
-    style_profile_version: Optional[int] = None,
+    style_profile_version: Optional[str] = None,
 ) -> None:
     """Index artifacts (e.g., title crawler output) into LightRAG.
 
@@ -352,7 +352,7 @@ def ensure_index_from_artifacts(
 
     rag = get_lightrag_for_contact("artifacts", working_dir=working_dir)
     groups = _load_artifacts_grouped(db_path, kind_filter=kind_filter, source_filter=source_filter)
-    spv = style_profile_version or 0
+    spv = style_profile_version or "0"
 
     for (kind, source), rows in groups.items():
         blocks: List[str] = []

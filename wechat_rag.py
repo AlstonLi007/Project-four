@@ -18,6 +18,7 @@ except Exception:  # pragma: no cover - optional dependency safeguard
 USE_WECHAT_RAG = os.environ.get("USE_WECHAT_RAG", os.environ.get("USE_RAG", "0")) == "1"
 WECHAT_RAG_TOP_K = int(os.environ.get("WECHAT_RAG_TOP_K", "4"))
 WECHAT_RAG_MODE = os.environ.get("WECHAT_RAG_MODE", None)
+DEFAULT_RAG_HALF_LIFE_DAYS = float(os.environ.get("WECHAT_RAG_HALF_LIFE_DAYS", 30.0))
 
 
 def get_rag_context(
@@ -26,6 +27,7 @@ def get_rag_context(
     *,
     style_profile_version: str | None = None,
     rag_mode: str | None = None,
+    half_life_days: float | None = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """Return a prompt-ready RAG context and metadata for Memori tags.
 
@@ -36,14 +38,33 @@ def get_rag_context(
     """
 
     latest_clean = (latest_text or "").strip()
-    resolved_mode = rag_mode or WECHAT_RAG_MODE
+    resolved_mode = (rag_mode or WECHAT_RAG_MODE or "off").lower() if rag_mode or WECHAT_RAG_MODE else "off"
+    resolved_half_life = half_life_days if half_life_days is not None else DEFAULT_RAG_HALF_LIFE_DAYS
 
     if not USE_WECHAT_RAG or resolved_mode == "off":
-        return "", {"enabled": False, "engine": "LightRAG", "reason": "USE_WECHAT_RAG=0", "rag_mode": resolved_mode}
+        return "", {
+            "enabled": False,
+            "engine": "LightRAG",
+            "reason": "rag_disabled",
+            "rag_mode": resolved_mode,
+            "half_life_days": resolved_half_life,
+        }
     if not latest_clean:
-        return "", {"enabled": False, "engine": "LightRAG", "reason": "empty_query"}
+        return "", {
+            "enabled": False,
+            "engine": "LightRAG",
+            "reason": "empty_query",
+            "rag_mode": resolved_mode,
+            "half_life_days": resolved_half_life,
+        }
     if rag_query_with_meta_for_contact is None:
-        return "", {"enabled": False, "engine": "LightRAG", "reason": "lightrag_missing"}
+        return "", {
+            "enabled": False,
+            "engine": "LightRAG",
+            "reason": "lightrag_missing",
+            "rag_mode": resolved_mode,
+            "half_life_days": resolved_half_life,
+        }
 
     try:
         top_k = WECHAT_RAG_TOP_K
@@ -65,6 +86,7 @@ def get_rag_context(
             "top_k": top_k,
             "style_profile_version": style_profile_version,
             "rag_mode": resolved_mode,
+            "half_life_days": resolved_half_life,
         }
         if meta:
             base_meta.update(meta)
@@ -76,4 +98,6 @@ def get_rag_context(
             "error": repr(exc),
             "top_k": WECHAT_RAG_TOP_K,
             "style_profile_version": style_profile_version,
+            "rag_mode": resolved_mode,
+            "half_life_days": resolved_half_life,
         }

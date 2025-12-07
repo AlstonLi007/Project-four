@@ -45,9 +45,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--style-profile-version",
-        type=int,
-        default=0,
-        help="Style profile version tag to embed in doc identifiers for A/B analysis.",
+        type=str,
+        default="0",
+        help="Style profile version tag (e.g., hashed model_id) to embed in doc identifiers for A/B analysis.",
     )
     parser.add_argument(
         "--artifacts-kind",
