@@ -1,0 +1,39 @@
+[project]
+name = "wechat-assistant-rpa"
+version = "0.1.0"
+description = "WeChat style assistant with vision-driven RPA and local style modeling"
+requires-python = ">=3.10"
+dependencies = [
+  "openai>=1.0.0",
+  "pytesseract",
+  "mss",
+  "opencv-python",
+  "pyautogui",
+  "numpy",
+  "pandas",
+  "torch",
+  "paddleocr>=2.8",
+  "sqlalchemy>=2.0.0",
+  "memori>=3.0.3",
+  "lightrag-hku>=1.4.9.8",
+  "streamlit>=1.32.0",
+  "skyvern>=0.1.0",
+  "typer>=0.9.0",
+  "python-dotenv>=1.0.1",
+]
+
+[project.scripts]
+wechat-monitor = "wechat_monitor:demo"
+title-crawler-demo = "title_crawler_demo:main"
+inspect-samples = "inspect_samples:main"
+prune-samples = "prune_samples:main"
+backfill-rag = "backfill_rag_from_db:main"
+llm-dashboard = "llm_dashboard_app:main"
+skyvern-task = "skyvern_task:main"
+wechat-rag = "wechat_rag_cli:main"
+fs-indexer = "fs_indexer:main"
+jarvis-console = "jarvis_console:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
